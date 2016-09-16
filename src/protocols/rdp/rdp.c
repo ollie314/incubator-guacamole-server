@@ -19,10 +19,13 @@
 
 #include "config.h"
 
+#include "audio_input.h"
 #include "client.h"
+#include "dvc.h"
 #include "guac_cursor.h"
 #include "guac_display.h"
 #include "guac_recording.h"
+#include "keyboard.h"
 #include "rdp.h"
 #include "rdp_bitmap.h"
 #include "rdp_cliprdr.h"
@@ -30,7 +33,6 @@
 #include "rdp_fs.h"
 #include "rdp_gdi.h"
 #include "rdp_glyph.h"
-#include "rdp_keymap.h"
 #include "rdp_pointer.h"
 #include "rdp_rail.h"
 #include "rdp_stream.h"
@@ -211,6 +213,7 @@ BOOL rdp_freerdp_pre_connect(freerdp* instance) {
     rdpPrimaryUpdate* primary;
     CLRCONV* clrconv;
 
+    guac_rdp_dvc_list* dvc_list = guac_rdp_dvc_list_alloc();
 
 #ifdef HAVE_FREERDP_REGISTER_ADDIN_PROVIDER
     /* Init FreeRDP add-in provider */
@@ -224,22 +227,16 @@ BOOL rdp_freerdp_pre_connect(freerdp* instance) {
 #endif
 
 #ifdef HAVE_FREERDP_DISPLAY_UPDATE_SUPPORT
-    /* Load required plugins if display update is enabled */
-    if (settings->resize_method == GUAC_RESIZE_DISPLAY_UPDATE) {
-
-        /* Load virtual channel management plugin (needed by display update) */
-        if (freerdp_channels_load_plugin(channels, instance->settings,
-                    "drdynvc", instance->settings))
-            guac_client_log(client, GUAC_LOG_WARNING,
-                    "Failed to load drdynvc plugin. Display update support "
-                    "will be disabled.");
-
-        /* Init display update plugin if "drdynvc" was loaded successfully */
-        else
-            guac_rdp_disp_load_plugin(instance->context);
-
-    }
+    /* Load "disp" plugin for display update */
+    if (settings->resize_method == GUAC_RESIZE_DISPLAY_UPDATE)
+        guac_rdp_disp_load_plugin(instance->context, dvc_list);
 #endif
+
+    /* Load "AUDIO_INPUT" plugin for audio input*/
+    if (settings->enable_audio_input) {
+        rdp_client->audio_input = guac_rdp_audio_buffer_alloc();
+        guac_rdp_audio_load_plugin(instance->context, dvc_list);
+    }
 
     /* Load clipboard plugin */
     if (freerdp_channels_load_plugin(channels, instance->settings,
@@ -325,6 +322,15 @@ BOOL rdp_freerdp_pre_connect(freerdp* instance) {
         } while (*(++current) != NULL);
 
     }
+
+    /* Load DRDYNVC plugin if required */
+    if (guac_rdp_load_drdynvc(instance->context, dvc_list))
+        guac_client_log(client, GUAC_LOG_WARNING,
+                "Failed to load drdynvc plugin. Display update and audio "
+                "input support will be disabled.");
+
+    /* Dynamic virtual channel list is no longer needed */
+    guac_rdp_dvc_list_free(dvc_list);
 
     /* Init color conversion structure */
     clrconv = calloc(1, sizeof(CLRCONV));
@@ -539,50 +545,6 @@ static void rdp_freerdp_context_free(freerdp* instance, rdpContext* context) {
 }
 
 /**
- * Loads all keysym/scancode mappings declared within the given keymap and its
- * parent keymap, if any. These mappings are stored within the guac_rdp_client
- * structure associated with the given guac_client for future use in
- * translating keysyms to the scancodes required by RDP key events.
- *
- * @param client
- *     The guac_client whose associated guac_rdp_client should be initialized
- *     with the keysym/scancode mapping defined in the given keymap.
- *
- * @param keymap
- *     The keymap to use to populate the given client's keysym/scancode
- *     mapping.
- */
-static void __guac_rdp_client_load_keymap(guac_client* client,
-        const guac_rdp_keymap* keymap) {
-
-    guac_rdp_client* rdp_client =
-        (guac_rdp_client*) client->data;
-
-    /* Get mapping */
-    const guac_rdp_keysym_desc* mapping = keymap->mapping;
-
-    /* If parent exists, load parent first */
-    if (keymap->parent != NULL)
-        __guac_rdp_client_load_keymap(client, keymap->parent);
-
-    /* Log load */
-    guac_client_log(client, GUAC_LOG_INFO, "Loading keymap \"%s\"", keymap->name);
-
-    /* Load mapping into keymap */
-    while (mapping->keysym != 0) {
-
-        /* Copy mapping */
-        GUAC_RDP_KEYSYM_LOOKUP(rdp_client->keymap, mapping->keysym) =
-            *mapping;
-
-        /* Next keysym */
-        mapping++;
-
-    }
-
-}
-
-/**
  * Waits for messages from the RDP server for the given number of microseconds.
  *
  * @param client
@@ -746,7 +708,8 @@ static int guac_rdp_handle_connection(guac_client* client) {
     ((rdp_freerdp_context*) rdp_inst->context)->client = client;
 
     /* Load keymap into client */
-    __guac_rdp_client_load_keymap(client, settings->server_layout);
+    rdp_client->keyboard = guac_rdp_keyboard_alloc(client,
+            settings->server_layout);
 
     /* Send connection name */
     guac_protocol_send_name(client->socket, settings->hostname);
@@ -800,7 +763,8 @@ static int guac_rdp_handle_connection(guac_client* client) {
 
                 /* Check the libfreerdp fds */
                 if (!freerdp_check_fds(rdp_inst)) {
-                    guac_client_log(client, GUAC_LOG_DEBUG,
+                    guac_client_abort(client,
+                            GUAC_PROTOCOL_STATUS_SERVER_ERROR,
                             "Error handling RDP file descriptors");
                     pthread_mutex_unlock(&(rdp_client->rdp_lock));
                     return 1;
@@ -808,7 +772,8 @@ static int guac_rdp_handle_connection(guac_client* client) {
 
                 /* Check channel fds */
                 if (!freerdp_channels_check_fds(channels, rdp_inst)) {
-                    guac_client_log(client, GUAC_LOG_DEBUG,
+                    guac_client_abort(client,
+                            GUAC_PROTOCOL_STATUS_SERVER_ERROR,
                             "Error handling RDP channel file descriptors");
                     pthread_mutex_unlock(&(rdp_client->rdp_lock));
                     return 1;
@@ -837,6 +802,7 @@ static int guac_rdp_handle_connection(guac_client* client) {
 
                 /* Handle RDP disconnect */
                 if (freerdp_shall_disconnect(rdp_inst)) {
+                    guac_client_stop(client);
                     guac_client_log(client, GUAC_LOG_INFO,
                             "RDP server closed connection");
                     pthread_mutex_unlock(&(rdp_client->rdp_lock));
@@ -884,6 +850,8 @@ static int guac_rdp_handle_connection(guac_client* client) {
 
     }
 
+    /* Kill client and finish connection */
+    guac_client_stop(client);
     guac_client_log(client, GUAC_LOG_INFO, "Internal RDP client disconnected");
 
     pthread_mutex_lock(&(rdp_client->rdp_lock));
@@ -904,6 +872,9 @@ static int guac_rdp_handle_connection(guac_client* client) {
 
     /* Free SVC list */
     guac_common_list_free(rdp_client->available_svc);
+
+    /* Free RDP keyboard state */
+    guac_rdp_keyboard_free(rdp_client->keyboard);
 
     /* Free display */
     guac_common_display_free(rdp_client->display);
@@ -953,8 +924,12 @@ void* guac_rdp_client_thread(void* data) {
     if (settings->enable_sftp) {
 
         /* Abort if username is missing */
-        if (settings->sftp_username == NULL)
+        if (settings->sftp_username == NULL) {
+            guac_client_abort(client, GUAC_PROTOCOL_STATUS_SERVER_ERROR,
+                    "A username or SFTP-specific username is required if "
+                    "SFTP is enabled.");
             return NULL;
+        }
 
         guac_client_log(client, GUAC_LOG_DEBUG,
                 "Connecting via SSH for SFTP filesystem access.");
@@ -973,6 +948,8 @@ void* guac_rdp_client_thread(void* data) {
                         settings->sftp_private_key,
                         settings->sftp_passphrase)) {
                 guac_common_ssh_destroy_user(rdp_client->sftp_user);
+                guac_client_abort(client, GUAC_PROTOCOL_STATUS_SERVER_ERROR,
+                        "Private key unreadable.");
                 return NULL;
             }
 
@@ -1015,6 +992,8 @@ void* guac_rdp_client_thread(void* data) {
         if (rdp_client->sftp_filesystem == NULL) {
             guac_common_ssh_destroy_session(rdp_client->sftp_session);
             guac_common_ssh_destroy_user(rdp_client->sftp_user);
+            guac_client_abort(client, GUAC_PROTOCOL_STATUS_UPSTREAM_ERROR,
+                    "SFTP connection failed.");
             return NULL;
         }
 

@@ -142,6 +142,11 @@ typedef struct guac_rdp_settings {
     char* password;
 
     /**
+     * Whether this connection is read-only, and user input should be dropped.
+     */
+    int read_only;
+
+    /**
      * The color depth of the display to request, in bits.
      */
     int color_depth;
@@ -377,6 +382,11 @@ typedef struct guac_rdp_settings {
      * The method to apply when the user's display changes size.
      */
     guac_rdp_resize_method resize_method;
+
+    /**
+     * Whether audio input (microphone) is enabled.
+     */
+    int enable_audio_input;
 
 } guac_rdp_settings;
 

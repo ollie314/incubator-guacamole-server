@@ -22,13 +22,14 @@
 
 #include "config.h"
 
+#include "audio_input.h"
 #include "guac_clipboard.h"
 #include "guac_display.h"
 #include "guac_surface.h"
 #include "guac_list.h"
+#include "keyboard.h"
 #include "rdp_disp.h"
 #include "rdp_fs.h"
-#include "rdp_keymap.h"
 #include "rdp_settings.h"
 
 #include <freerdp/freerdp.h>
@@ -87,20 +88,9 @@ typedef struct guac_rdp_client {
     guac_common_surface* current_surface;
 
     /**
-     * The keymap to use when translating keysyms into scancodes or sequences
-     * of scancodes for RDP.
+     * The current state of the keyboard with respect to the RDP session.
      */
-    guac_rdp_static_keymap keymap;
-
-    /**
-     * The state of all keys, based on whether events for pressing/releasing
-     * particular keysyms have been received. This is necessary in order to
-     * determine which keys must be released/pressed when a particular
-     * keysym can only be typed through a sequence of scancodes (such as
-     * an Alt-code) because the server-side keymap does not support that
-     * keysym.
-     */
-    guac_rdp_keysym_state_map keysym_state;
+    guac_rdp_keyboard* keyboard;
 
     /**
      * The current clipboard contents.
@@ -119,6 +109,11 @@ typedef struct guac_rdp_client {
      * Audio output, if any.
      */
     guac_audio_stream* audio;
+
+    /**
+     * Audio input buffer, if audio input is enabled.
+     */
+    guac_rdp_audio_buffer* audio_input;
 
     /**
      * The filesystem being shared, if any.

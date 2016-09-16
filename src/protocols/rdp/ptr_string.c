@@ -17,25 +17,29 @@
  * under the License.
  */
 
-#ifndef GUAC_RDP_INPUT_H
-#define GUAC_RDP_INPUT_H
+#include "config.h"
+#include "ptr_string.h"
 
-#include <guacamole/user.h>
+#include <guacamole/client.h>
 
-/**
- * Handler for Guacamole user mouse events.
- */
-guac_user_mouse_handler guac_rdp_user_mouse_handler;
+#include <stdio.h>
+#include <stdlib.h>
 
-/**
- * Handler for Guacamole user key events.
- */
-guac_user_key_handler guac_rdp_user_key_handler;
+void guac_rdp_ptr_to_string(void* data, char* str) {
 
-/**
- * Handler for Guacamole user size events.
- */
-guac_user_size_handler guac_rdp_user_size_handler;
+    /* Convert pointer to string */
+    sprintf(str, "%p", data);
 
-#endif
+}
+
+void* guac_rdp_string_to_ptr(const char* str) {
+
+    void* data;
+
+    /* Convert string to pointer */
+    sscanf(str, "%p", &data);
+
+    return data;
+
+}
 
